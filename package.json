@@ -16,14 +16,14 @@
     "author": "Your Name",
     "license": "MIT",
     "dependencies": {
-      "axios": "^1.6.8", // For making HTTP requests to Jira
-      "cors": "^2.8.5",   // To handle CORS for requests from Figma plugin
-      "dotenv": "^16.4.5", // To manage environment variables
-      "express": "^4.19.2", // Web framework
-      "express-rate-limit": "^7.2.0" // Basic rate limiting
+      "axios": "^1.6.8",
+      "cors": "^2.8.5",
+      "dotenv": "^16.4.5",
+      "express": "^4.19.2",
+      "express-rate-limit": "^7.2.0"
     },
     "engines": {
-      "node": ">=18.0.0" // Specify Node.js version for Railway
+      "node": ">=18.0.0"
     }
   }
   
