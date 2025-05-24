@@ -43,8 +43,9 @@ app.post('/api/jira-proxy', async (req, res) => {
   const requestUrl = `${jiraBaseUrl}/${jiraApiEndpoint}`;
   const authToken = `Basic ${base64Encode(`${jiraEmail}:${jiraToken}`)}`;
 
-  // Define a common User-Agent
-  const commonUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36';
+  // Define a common User-Agent and Accept-Language
+  const commonUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'; // Updated Chrome version
+  const commonAcceptLanguage = 'en-US,en;q=0.9,fa;q=0.8'; // Added Persian as a secondary language
 
   console.log(`Proxying request: ${method.toUpperCase()} ${requestUrl}`);
 
@@ -57,7 +58,8 @@ app.post('/api/jira-proxy', async (req, res) => {
         'Authorization': authToken,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'User-Agent': commonUserAgent, // Add User-Agent header
+        'User-Agent': commonUserAgent,
+        'Accept-Language': commonAcceptLanguage, // Add Accept-Language header
       },
       timeout: 20000,
     });
@@ -74,10 +76,19 @@ app.post('/api/jira-proxy', async (req, res) => {
       const contentType = error.response.headers['content-type'];
       if (contentType && contentType.includes('text/html')) {
         console.error('Jira returned an HTML response, possibly due to WAF/auth issue (e.g., CloudFront block). Request ID from CloudFront (if present in HTML) might be useful for Atlassian support.');
+        // Extract CloudFront Request ID if possible (this is a best-effort attempt)
+        let cloudfrontRequestId = null;
+        if (typeof error.response.data === 'string') {
+            const match = error.response.data.match(/Request ID: ([^\s<]+)/);
+            if (match && match[1]) {
+                cloudfrontRequestId = match[1];
+                console.error('CloudFront Request ID:', cloudfrontRequestId);
+            }
+        }
         return res.status(error.response.status || 502).json({
           error: 'Error connecting to Jira API. Jira returned an unexpected HTML response (possibly blocked by CloudFront).',
           jiraHtmlError: true,
-          // jiraResponseData: responseDataString // Be cautious about sending potentially large HTML back
+          cloudfrontRequestId: cloudfrontRequestId, // Include Request ID if found
         });
       }
       
