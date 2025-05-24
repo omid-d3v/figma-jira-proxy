@@ -1,106 +1,107 @@
 // src/server.js
-require('dotenv').config(); // Load environment variables from .env file
+require('dotenv').config();
 const express = require('express');
-const axios = require('axios'); // For making HTTP requests
-const cors = require('cors');   // For enabling Cross-Origin Resource Sharing
-const rateLimit = require('express-rate-limit'); // For basic rate limiting
+const axios = require('axios');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
-const PORT = process.env.PORT || 3000; // Port for the server to listen on
+const PORT = process.env.PORT || 3000;
 
-// --- Middlewares ---
-
-// CORS Configuration
-// برای امنیت بیشتر، در محیط عملیاتی به جای '*' آدرس دقیق پلاگین فیگما یا دامنه آن را قرار دهید.
-// مثال: const allowedOrigins = ['https://www.figma.com', 'http://localhost:YOUR_FIGMA_DEV_PORT'];
 const corsOptions = {
-  origin: process.env.JIRA_PROXY_ALLOWED_ORIGINS || '*', // Allow requests from specified origins
-  methods: ['POST', 'GET', 'OPTIONS'], // Allow only specified HTTP methods
-  allowedHeaders: ['Content-Type', 'Authorization'], // Allow only specified headers
+  origin: process.env.JIRA_PROXY_ALLOWED_ORIGINS || '*',
+  methods: ['POST', 'GET', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'], // Authorization is not expected from client to proxy
 };
 app.use(cors(corsOptions));
-
-// JSON Body Parser: To parse JSON request bodies
 app.use(express.json());
 
-// Rate Limiting: Basic protection against abuse
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-  message: { error: 'درخواست‌های شما بیش از حد مجاز است، لطفاً بعداً تلاش کنید.' },
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests from this IP, please try again after 15 minutes.' },
 });
-app.use('/api/', apiLimiter); // Apply rate limiting to all /api/ routes
+app.use('/api/', apiLimiter);
 
-// --- Helper for Base64 Encoding (similar to btoa) ---
-const base64Encode = (str) => {
-  try {
-    return Buffer.from(str).toString('base64');
-  } catch (e) {
-    console.error("Base64 encoding failed:", e);
-    throw new Error("Failed to encode credentials.");
-  }
-};
+const base64Encode = (str) => Buffer.from(str).toString('base64');
 
-// --- Routes ---
-
-// Health check endpoint
 app.get('/', (req, res) => {
-  res.status(200).json({ message: 'سرور پراکسی فیگما به جیرا فعال است.', status: 'OK' });
+  res.status(200).json({ message: 'Figma to Jira Proxy Server is active.', status: 'OK' });
 });
 
-// Generic Jira API Proxy Endpoint
 app.post('/api/jira-proxy', async (req, res) => {
   const { jiraDomain, jiraEmail, jiraToken, jiraApiEndpoint, method, body: requestBody } = req.body;
 
-  // Basic Validation
   if (!jiraDomain || !jiraEmail || !jiraToken || !jiraApiEndpoint || !method) {
-    return res.status(400).json({ error: 'فیلدهای ضروری ارسال نشده‌اند: jiraDomain, jiraEmail, jiraToken, jiraApiEndpoint, method' });
+    console.warn('Proxy request missing required fields:', req.body);
+    return res.status(400).json({ error: 'Missing required fields: jiraDomain, jiraEmail, jiraToken, jiraApiEndpoint, method' });
   }
 
   const jiraBaseUrl = `https://${jiraDomain}/rest/api/3`;
   const requestUrl = `${jiraBaseUrl}/${jiraApiEndpoint}`;
   const authToken = `Basic ${base64Encode(`${jiraEmail}:${jiraToken}`)}`;
 
-  console.log(`پراکسی کردن درخواست: ${method} ${requestUrl}`); // Logging for debugging (consider removing sensitive parts in production)
+  // Define a common User-Agent
+  const commonUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36';
+
+  console.log(`Proxying request: ${method.toUpperCase()} ${requestUrl}`);
 
   try {
     const response = await axios({
       method: method.toLowerCase(),
       url: requestUrl,
-      data: requestBody, // axios handles GET requests with data in params, POST/PUT/PATCH with data in body
+      data: requestBody,
       headers: {
         'Authorization': authToken,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
+        'User-Agent': commonUserAgent, // Add User-Agent header
       },
-      timeout: 15000, // 15 seconds timeout
+      timeout: 20000,
     });
+    console.log(`Successfully proxied ${method.toUpperCase()} ${requestUrl} - Status: ${response.status}`);
     res.status(response.status).json(response.data);
   } catch (error) {
-    console.error('خطا در هنگام پراکسی به جیرا:', error.response ? error.response.data : error.message);
+    console.error(`Error proxying to Jira for ${method.toUpperCase()} ${requestUrl}:`);
     if (error.response) {
+      console.error('Jira API Error Status:', error.response.status);
+      console.error('Jira API Error Headers:', JSON.stringify(error.response.headers, null, 2));
+      const responseDataString = typeof error.response.data === 'string' ? error.response.data : JSON.stringify(error.response.data, null, 2);
+      console.error('Jira API Error Data:', responseDataString);
+      
+      const contentType = error.response.headers['content-type'];
+      if (contentType && contentType.includes('text/html')) {
+        console.error('Jira returned an HTML response, possibly due to WAF/auth issue (e.g., CloudFront block). Request ID from CloudFront (if present in HTML) might be useful for Atlassian support.');
+        return res.status(error.response.status || 502).json({
+          error: 'Error connecting to Jira API. Jira returned an unexpected HTML response (possibly blocked by CloudFront).',
+          jiraHtmlError: true,
+          // jiraResponseData: responseDataString // Be cautious about sending potentially large HTML back
+        });
+      }
+      
       res.status(error.response.status).json({
-        error: 'خطا در ارتباط با API جیرا',
-        jiraError: error.response.data,
+        error: 'Error from Jira API.',
+        jiraErrorStatus: error.response.status,
+        jiraErrorData: error.response.data,
       });
     } else if (error.request) {
-      res.status(504).json({ error: 'پاسخی از سرور جیرا دریافت نشد (Gateway Timeout).' });
+      console.error('No response received from Jira:', error.message);
+      res.status(504).json({ error: 'No response received from Jira (Gateway Timeout).' });
     } else {
-      res.status(500).json({ error: `خطای داخلی سرور پراکسی: ${error.message}` });
+      console.error('Error setting up Jira request:', error.message);
+      res.status(500).json({ error: `Proxy internal error: ${error.message}` });
     }
   }
 });
 
-// --- Global Error Handler (Optional, for unhandled errors) ---
 app.use((err, req, res, next) => {
-  console.error("خطای پیش‌بینی نشده:", err.stack);
-  res.status(500).send({ error: 'یک خطای پیش‌بینی نشده در سرور رخ داد!' });
+  console.error("Unhandled error in proxy:", err.stack);
+  res.status(500).send({ error: 'An unexpected error occurred on the proxy server!' });
 });
 
-// --- Start Server ---
 app.listen(PORT, () => {
-  console.log(`سرور پراکسی فیگما به جیرا روی پورت ${PORT} در حال اجرا است.`);
-  console.log(`مبداهای مجاز CORS: ${process.env.JIRA_PROXY_ALLOWED_ORIGINS || '*'}`);
+  console.log(`Figma to Jira Proxy Server listening on port ${PORT}`);
+  console.log(`Allowed CORS origins: ${process.env.JIRA_PROXY_ALLOWED_ORIGINS || '*'}`);
 });
