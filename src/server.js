@@ -60,6 +60,8 @@ app.post('/api/jira-proxy', async (req, res) => {
         'Accept': 'application/json',
         'User-Agent': commonUserAgent,
         'Accept-Language': commonAcceptLanguage, // Add Accept-Language header
+        'X-Atlassian-Token': 'no-check', 
+
       },
       timeout: 20000,
     });
